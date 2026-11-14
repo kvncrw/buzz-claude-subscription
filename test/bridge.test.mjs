@@ -37,6 +37,7 @@ test('OAuth validation rejects API keys, whitespace, command injection, and over
 
 test('isolated environment forbids API fallback, gateway/cloud credentials, nested sessions, and code injection', () => {
   const source = { PATH: '/usr/bin', HOME: '/home/test', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', ANTHROPIC_API_KEY: 'api', ANTHROPIC_AUTH_TOKEN: 'auth', ANTHROPIC_BASE_URL: 'https://gateway.invalid', ANTHROPIC_CUSTOM_HEADERS: 'Authorization: secret', CLAUDE_CODE_OAUTH_TOKEN: 'old', CLAUDE_CODE_API_KEY_HELPER: 'helper', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CONFIG_DIR: '/other', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'nested', AWS_SESSION_TOKEN: 'cloud', GOOGLE_APPLICATION_CREDENTIALS: '/credential.json', AZURE_API_KEY: 'cloud', OPENAI_API_KEY: 'api', HTTPS_PROXY: 'http://gateway.invalid', NODE_OPTIONS: '--require evil.js', LD_PRELOAD: '/evil.so' };
+  source.PSModulePath = '/untrusted-modules';
   assert.deepEqual(isolatedEnv(source, TOKEN), { PATH: source.PATH, HOME: source.HOME, DBUS_SESSION_BUS_ADDRESS: source.DBUS_SESSION_BUS_ADDRESS, CLAUDE_CODE_OAUTH_TOKEN: TOKEN });
   assert.equal(isolatedEnv(source).CLAUDE_CODE_OAUTH_TOKEN, undefined);
   assert.equal(source.ANTHROPIC_API_KEY, 'api');

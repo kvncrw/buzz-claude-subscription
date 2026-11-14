@@ -38,7 +38,8 @@ export function isolatedEnv(source = process.env, token) {
   const env = {};
   for (const [key, value] of Object.entries(source)) {
     if (/^(?:ANTHROPIC|CLAUDE|AWS|AMAZON|BEDROCK|GOOGLE|GCLOUD|GCP|VERTEX|AZURE|FOUNDRY|OPENAI|LITELLM|OTEL)(?:_|$)/i.test(key) || /^CLAUDECODE$/i.test(key)) continue;
-    if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_.*)$/i.test(key)) continue;
+    // System PowerShell must resolve its own modules, not inherited PowerShell 7/custom modules.
+    if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|PSMODULEPATH|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_.*)$/i.test(key)) continue;
     if (value !== undefined) env[key] = value;
   }
   if (token !== undefined) env.CLAUDE_CODE_OAUTH_TOKEN = validateToken(token);
