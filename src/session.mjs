@@ -37,13 +37,16 @@ export class JsonLines {
       this.error = new Error('Claude output exceeded the protocol line limit.');
       return;
     }
+    let value;
     try {
-      const value = JSON.parse(line);
+      value = JSON.parse(line);
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
-      this.accept(value);
     } catch {
       this.error = new Error('Claude returned invalid stream JSON. Update Claude Code and try again.');
+      return;
     }
+    // Consumer failures are not JSON framing failures.
+    this.accept(value);
   }
   finish() {
     if (!this.error && this.buffer.trim()) this.line(this.buffer);
@@ -66,12 +69,8 @@ export class TurnOutput {
       if (Array.isArray(content)) {
         const text = content.filter(block => block.type === 'text').map(block => block.text || '').join('\n');
         if (text) this.lastText = text;
-        for (const block of content) if (block.type === 'tool_use') this.step(block.name || 'Tool');
+        for (const block of content) if (block.type === 'tool_use') this.step(toolName(block.name));
       }
-    }
-    if (event.type === 'stream_event' && event.event?.type === 'content_block_start') {
-      const block = event.event.content_block;
-      if (block?.type === 'tool_use') this.step(block.name || 'Tool');
     }
     if (event.type === 'result') {
       if (this.result) this.failure = new Error('Claude returned multiple terminal results.');
@@ -83,10 +82,12 @@ export class TurnOutput {
     if (this.failure) throw this.failure;
     if (!this.result) throw new Error(`Claude exited without a result (${code ?? 'signal'}). Check the subscription token and Claude installation in Settings.`);
     const denied = Array.isArray(this.result.permission_denials) ? this.result.permission_denials : [];
-    const denials = [...new Set(denied.map(item => typeof item.tool_name === 'string' ? item.tool_name : 'a tool'))];
+    const denials = [...new Set(denied.map(item => toolName(item?.tool_name)))];
     if (this.result.is_error || code !== 0) {
-      const permissions = denials.length ? ` Permission denied: ${denials.join(', ')}. This harness cannot answer interactive approvals.` : '';
-      throw new Error(`Claude could not complete this turn (${this.result.subtype || 'process error'}). Check subscription access, usage limits and the selected model; then try again.${permissions}`);
+      const permissions = denials.length ? ` Permission denied: ${denials.join(', ').slice(0, 300)}. This harness cannot answer interactive approvals.` : '';
+      const detail = typeof this.result.result === 'string' ? safeMessage(this.result.result).trim().slice(0, 900) : '';
+      const subtype = safeMessage(this.result.subtype || 'process error').slice(0, 100);
+      throw new Error(`Claude could not complete this turn (${subtype}; exit ${code ?? 'signal'}).${permissions}${detail ? ` ${detail}` : ''}`);
     }
     return {
       sessionId: this.result.session_id,
@@ -101,25 +102,38 @@ export class SessionLanes {
   constructor() { this.lanes = new Map(); }
   run(key, signal, action) {
     const prior = this.lanes.get(key) || Promise.resolve();
-    const result = prior.catch(() => {}).then(() => {
-      if (signal.aborted) throw abortError();
+    let removeAbort = () => {};
+    let started = false;
+    const cancelled = new Promise((_, reject) => {
+      const abort = () => { if (!started) reject(signal.reason || abortError()); };
+      signal.addEventListener('abort', abort, { once: true });
+      removeAbort = () => signal.removeEventListener('abort', abort);
+      if (signal.aborted) abort();
+    });
+    const queued = prior.then(() => {
+      signal.throwIfAborted();
+      started = true;
+      removeAbort();
       return action();
     });
-    const settled = result.then(() => {}, () => {});
+    // Keep the lane behind its predecessor even when its caller cancels early.
+    const settled = queued.then(() => {}, () => {});
     this.lanes.set(key, settled);
-    void settled.then(() => { if (this.lanes.get(key) === settled) this.lanes.delete(key); });
-    return result;
+    void settled.then(() => {
+      if (this.lanes.get(key) === settled) this.lanes.delete(key);
+    });
+    return Promise.race([queued, cancelled]).finally(removeAbort);
   }
 }
 
-export async function bridgeRequest(host, source, request, { signal, onEvent = () => {}, onSent = () => {} } = {}) {
+export async function bridgeRequest(host, source, request, { signal, onEvent = () => {} } = {}) {
   if (!host.spawn) throw new Error('Buzz desktop process access is unavailable. Install this plugin in Buzz desktop with the Node process grant.');
   signal?.throwIfAborted();
   let process;
   let failure;
   let stopped = false;
   const parser = new JsonLines(event => {
-    if (event.type === 'bridge_error') failure = new Error(safeMessage(event.message));
+    if (event.type === 'bridge_error') failure = new Error(safeMessage(event.message || 'Claude bridge failed.'));
     onEvent(event);
   });
   const stop = () => {
@@ -131,27 +145,43 @@ export async function bridgeRequest(host, source, request, { signal, onEvent = (
     try {
       process = await host.spawn('bridge', {
         args: ['-e', source],
+        // The bridge itself holds credentials, before the native child env exists.
+        env: {
+          NODE_OPTIONS: null, NODE_PATH: null,
+          LD_PRELOAD: null, LD_LIBRARY_PATH: null, LD_AUDIT: null,
+          DYLD_INSERT_LIBRARIES: null, DYLD_LIBRARY_PATH: null,
+          DYLD_FRAMEWORK_PATH: null, DYLD_FALLBACK_LIBRARY_PATH: null,
+          DYLD_FALLBACK_FRAMEWORK_PATH: null, DYLD_ROOT_PATH: null,
+          DYLD_IMAGE_SUFFIX: null, DYLD_VERSIONED_LIBRARY_PATH: null,
+          DYLD_VERSIONED_FRAMEWORK_PATH: null,
+        },
         onStdout: chunk => {
-          parser.push(chunk);
-          if (parser.error) { failure = parser.error; stop(); }
+          if (failure) return;
+          try {
+            parser.push(chunk);
+            if (parser.error) throw parser.error;
+          } catch (error) {
+            failure = error;
+            stop();
+          }
         },
         // Never render unstructured stderr; it can contain credentials.
         onStderr: () => {},
       });
-    } catch {
-      throw new Error('Cannot start the Node bridge. Install Node.js 20 or newer on the same system as Buzz and make node available on the desktop application PATH; restart Buzz. Also check the plugin process grant.');
+    } catch (error) {
+      if (failure) throw failure;
+      throw new Error(`Cannot start the Node bridge: ${safeMessage(error)}. Check Node.js 20+ on the desktop PATH and the plugin process grant.`);
     }
-    if (stopped || signal?.aborted) { await process.kill().catch(() => {}); throw abortError(); }
-    for (const chunk of jsonChunks(JSON.stringify(request))) {
-      signal?.throwIfAborted();
-      await process.write(chunk);
-    }
-    // Drop our temporary reference as soon as the host accepts the write.
+    if (failure) throw failure;
+    if (stopped || signal?.aborted) throw signal?.reason || abortError();
+    // Buzz queues writes and splits them at UTF-8-safe boundaries.
+    await process.write(JSON.stringify(request));
     if (request.action === 'save') delete request.token;
+    signal?.throwIfAborted();
     await process.end();
-    onSent();
     const code = await process.exited;
-    if (signal?.aborted) throw abortError();
+    signal?.throwIfAborted();
+    if (failure) throw failure;
     parser.finish();
     if (failure) throw failure;
     return code;
@@ -165,7 +195,10 @@ export async function bridgeRequest(host, source, request, { signal, onEvent = (
 const PREFIX = 'kvncrw.buzz-claude-subscription/session/v1/';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export class SessionStore {
-  constructor(storage) { this.storage = storage; }
+  constructor(storage) {
+    this.storage = storage;
+    this.writes = Promise.resolve();
+  }
   async get(key, fingerprint) {
     const raw = await this.storage.read(PREFIX + key);
     if (!raw) return undefined;
@@ -177,31 +210,54 @@ export class SessionStore {
     }
     return value;
   }
-  put(key, value) { return this.storage.set(PREFIX + key, JSON.stringify(value)); }
-  remove(key) { return this.storage.set(PREFIX + key, null); }
-  async clear(agentKey) {
-    const entries = await this.storage.scan(PREFIX);
-    for (const storedKey of Object.keys(entries)) {
-      let identity;
-      try { identity = JSON.parse(storedKey.slice(PREFIX.length)); } catch { continue; }
-      if (identity[0] === agentKey) await this.storage.set(storedKey, null);
-    }
+  mutate(action) {
+    const result = this.writes.then(action);
+    this.writes = result.catch(() => {});
+    return result;
+  }
+  put(key, value) {
+    return this.mutate(async () => {
+      await this.storage.set(PREFIX + key, JSON.stringify(value));
+      const agentKey = JSON.parse(key)[0];
+      const entries = await this.storage.scan(PREFIX);
+      const matching = Object.entries(entries).flatMap(([storedKey, raw]) => {
+        try {
+          if (JSON.parse(storedKey.slice(PREFIX.length))[0] !== agentKey) return [];
+          const saved = JSON.parse(raw);
+          return [{ key: storedKey, at: Number.isFinite(saved.at) ? saved.at : 0 }];
+        } catch { return []; }
+      }).sort((a, b) => b.at - a.at || a.key.localeCompare(b.key));
+      for (const old of matching.slice(200)) await this.storage.set(old.key, null);
+    });
+  }
+  remove(key) { return this.mutate(() => this.storage.set(PREFIX + key, null)); }
+  clear(agentKey) {
+    return this.mutate(async () => {
+      const entries = await this.storage.scan(PREFIX);
+      for (const storedKey of Object.keys(entries)) {
+        let identity;
+        try { identity = JSON.parse(storedKey.slice(PREFIX.length)); } catch { continue; }
+        if (identity[0] === agentKey) await this.storage.set(storedKey, null);
+      }
+    });
+  }
+  async prune(snapshot) {
+    // "running" is not a complete membership list, even when status is ready:
+    // disconnected communities and other accounts are absent. Only explicit
+    // removal evidence is safe; never delete associations merely for absence.
+    if (snapshot?.status !== 'ready') return;
+    const removed = new Set((snapshot.agents || []).filter(agent => agent.deleting).map(agent => agent.key));
+    for (const key of removed) await this.clear(key);
   }
 }
 
-// A progress post must not hide a later answer; an explicit final MCP reply does.
-export function finalReply(text, postedTexts, finalPosted) {
-  if (typeof text !== 'string' || !text.trim() || finalPosted) return undefined;
-  return postedTexts.has(text.trim()) ? undefined : text;
+function toolName(name) {
+  return safeMessage(typeof name === 'string' ? name.replace(/^mcp__buzz__/, '') : 'a tool');
 }
 
-// Host IPC limits each write; do not split a Unicode surrogate pair at a boundary.
-export function* jsonChunks(json) {
-  for (let start = 0; start < json.length;) {
-    let end = Math.min(start + 32 * 1024, json.length);
-    const last = json.charCodeAt(end - 1);
-    if (end < json.length && last >= 0xd800 && last <= 0xdbff) end--;
-    yield json.slice(start, end);
-    start = end;
-  }
+// Any successful Buzz publication owns the reply; private closing text is not
+// a second answer, even when send omitted its optional final flag.
+export function finalReply(text, postedTexts) {
+  if (postedTexts.size || typeof text !== 'string' || !text.trim()) return undefined;
+  return text;
 }

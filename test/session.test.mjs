@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { JsonLines, TurnOutput, SessionLanes, SessionStore, sessionKey, safeMessage, finalReply, jsonChunks } from '../src/session.mjs';
+import { JsonLines, TurnOutput, SessionLanes, SessionStore, sessionKey, safeMessage, finalReply, bridgeRequest } from '../src/session.mjs';
 
 const id = 'd5932f60-8894-4615-95d1-cda1e07e4076';
 const result = (fields = {}) => ({ type: 'result', session_id: id, is_error: false, result: 'Final answer', ...fields });
@@ -93,8 +93,10 @@ test('one lane serializes turns, cancels queued work, recovers from failure and 
   await lanes.run('two', signal, () => order.push('independent'));
   assert.deepEqual(order, ['first', 'independent']);
   cancelled.abort();
+  await secondCancelled;
+  assert.deepEqual(order, ['first', 'independent']);
   release();
-  await Promise.all([firstFailed, secondCancelled, third]);
+  await Promise.all([firstFailed, third]);
   assert.deepEqual(order, ['first', 'independent', 'third']);
 });
 
@@ -136,28 +138,134 @@ test('diagnostic redaction does not repeat OAuth tokens or bearer headers', () =
   assert.equal(safeMessage(new Error('Bad sk-ant-oat01-sensitive Bearer private-value')), 'Bad [redacted] Bearer [redacted]');
 });
 
-test('final replies are not duplicated, but progress messages do not swallow the answer', () => {
+test('any successful Buzz send suppresses missing, matching and different final replies', () => {
   const posted = new Set(['Working on it…']);
-  assert.equal(finalReply('The answer is 42.', posted, false), 'The answer is 42.');
-  posted.add('The answer is 42.');
-  assert.equal(finalReply('  The answer is 42.  ', posted, false), undefined);
-  assert.equal(finalReply('A CLI-only closing summary', posted, true), undefined);
-  assert.equal(finalReply('', posted, false), undefined);
+  for (const text of [undefined, '', 'Working on it…', 'The answer is 42.']) {
+    assert.equal(finalReply(text, posted), undefined);
+  }
+  assert.equal(finalReply('The answer is 42.', new Set()), 'The answer is 42.');
 });
 
-test('large bridge JSON is bounded per write and preserves non-BMP boundary characters', () => {
-  // Place a high surrogate at the last UTF-16 slot of the first nominal chunk.
-  const prefix = JSON.stringify({ action: 'run', prompt: '' }).indexOf('"prompt":"') + '"prompt":"'.length;
-  const prompt = 'a'.repeat(32767 - prefix) + '🌍' + '日本語🌍'.repeat(300000);
-  const wire = JSON.stringify({ action: 'run', prompt });
-  assert.ok(Buffer.byteLength(wire, 'utf8') > 1024 * 1024);
-  const chunks = [...jsonChunks(wire)];
-  assert.ok(chunks.length > 1);
-  for (const chunk of chunks) {
-    assert.ok(Buffer.byteLength(chunk, 'utf8') < 1024 * 1024);
-    assert.ok(!/[\uD800-\uDBFF]$/.test(chunk));
-    assert.ok(!/^[\uDC00-\uDFFF]/.test(chunk));
+test('consumer exceptions retain their identity instead of becoming malformed JSON', () => {
+  const failure = new Error('Activity callback failed');
+  const parser = new JsonLines(() => { throw failure; });
+  assert.throws(() => parser.push('{"type":"assistant"}\n'), error => error === failure);
+});
+
+test('terminal errors retain subtype, safe result text and normalized permission denials', () => {
+  const output = new TurnOutput();
+  output.accept(result({
+    is_error: true, subtype: 'error_max_turns',
+    result: 'Turn limit reached; sk-ant-oat01-private',
+    permission_denials: [{ tool_name: 'Bash' }, { tool_name: 'mcp__buzz__send' }],
+  }));
+  assert.throws(() => output.finish(1), error => {
+    assert.match(error.message, /error_max_turns; exit 1/);
+    assert.match(error.message, /Turn limit reached; \[redacted\]/);
+    assert.match(error.message, /Permission denied: Bash, send/);
+    assert.doesNotMatch(error.message, /sk-ant-/);
+    return true;
+  });
+});
+
+test('one tool call reports only its complete assistant event and strips MCP prefixes', () => {
+  const steps = [];
+  const output = new TurnOutput(tool => steps.push(tool));
+  const block = { type: 'tool_use', name: 'mcp__buzz__send' };
+  output.accept({ type: 'stream_event', event: { type: 'content_block_start', content_block: block } });
+  output.accept({ type: 'assistant', message: { content: [block] } });
+  assert.deepEqual(steps, ['send']);
+});
+
+test('early malformed stdout and consumer failures survive delayed spawn resolution', async () => {
+  for (const consumerFails of [false, true]) {
+    let killed = 0;
+    let written = false;
+    const host = { spawn: async (_, options) => {
+      options.onStdout(consumerFails ? '{"type":"assistant"}\n' : 'not JSON\n');
+      return {
+        kill: async () => { killed++; }, write: async () => { written = true; },
+        end: async () => {}, exited: Promise.resolve(0),
+      };
+    } };
+    await assert.rejects(bridgeRequest(host, '', { action: 'status' }, {
+      onEvent: () => { throw new Error('Consumer broke'); },
+    }), consumerFails ? /Consumer broke/ : /invalid stream JSON/);
+    assert.equal(written, false);
+    assert.equal(killed, 1);
   }
-  assert.equal(chunks.join(''), wire);
-  assert.equal(JSON.parse(chunks.join('')).prompt, prompt);
+});
+
+test('host spawn failures preserve actionable sanitized rejection details', async () => {
+  await assert.rejects(bridgeRequest({
+    spawn: async () => { throw new Error('Process grant denied; Bearer private-value'); },
+  }, '', { action: 'status' }), error => {
+    assert.match(error.message, /Process grant denied; Bearer \[redacted\]/);
+    assert.doesNotMatch(error.message, /private-value/);
+    return true;
+  });
+});
+
+test('host receives intact large Unicode JSON and a sanitized bridge environment', async () => {
+  const prompt = '日本語🌍'.repeat(300000);
+  const received = [];
+  let environment;
+  const code = await bridgeRequest({ spawn: async (_, options) => {
+    environment = options.env;
+    return {
+      write: async data => received.push(data),
+      end: async () => options.onStdout('{"type":"bridge_status","tokenStored":false}\n'),
+      exited: Promise.resolve(0), kill: async () => {},
+    };
+  } }, '', { action: 'run', prompt });
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(received.join('')).prompt, prompt);
+  assert.equal(environment.NODE_OPTIONS, null);
+  assert.equal(environment.NODE_PATH, null);
+  assert.equal(environment.LD_PRELOAD, null);
+  assert.equal(environment.DYLD_INSERT_LIBRARIES, null);
+});
+
+test('session retention caps each membership by timestamp without evicting another', async () => {
+  const storage = memoryStore();
+  const store = new SessionStore(storage);
+  const key = (member, index) => sessionKey({ key: member, relay: 'relay' }, { key: `thread-${index}` });
+  const value = { id, cursor: 'cursor', fingerprint: 'config' };
+  await store.put(key('other', 0), { ...value, at: 0 });
+  await Promise.all(Array.from({ length: 201 }, (_, at) => store.put(key('member', at), { ...value, at })));
+  assert.equal(await store.get(key('member', 0), 'config'), undefined);
+  assert.equal((await store.get(key('member', 1), 'config')).at, 1);
+  assert.equal((await store.get(key('member', 200), 'config')).at, 200);
+  assert.equal((await store.get(key('other', 0), 'config')).at, 0);
+  assert.equal(Object.keys(await storage.scan('')).length, 201);
+});
+
+test('only explicit removed memberships in ready snapshots can be pruned', async () => {
+  const store = new SessionStore(memoryStore());
+  const key = member => sessionKey({ key: member, relay: 'relay' }, { key: 'thread' });
+  const value = { id, cursor: 'cursor', fingerprint: 'config' };
+  await store.put(key('removed'), value);
+  await store.put(key('offline'), value);
+  await store.prune({ status: 'loading', agents: [{ key: 'removed', deleting: true }] });
+  assert.deepEqual(await store.get(key('removed'), 'config'), value);
+  await store.prune({ status: 'ready', agents: [{ key: 'removed', deleting: true }], running: [] });
+  assert.equal(await store.get(key('removed'), 'config'), undefined);
+  assert.deepEqual(await store.get(key('offline'), 'config'), value);
+});
+
+test('long terminal details remain bounded without hiding permission denials', () => {
+  const output = new TurnOutput();
+  output.accept(result({
+    is_error: true, subtype: 'error_max_turns',
+    result: `Usage limit reached. ${'detail '.repeat(1000)}`,
+    permission_denials: [{ tool_name: 'Bash' }],
+  }));
+  assert.throws(() => output.finish(1), error => {
+    const message = safeMessage(error);
+    assert.match(message, /error_max_turns/);
+    assert.match(message, /Usage limit reached/);
+    assert.match(message, /Permission denied: Bash/);
+    assert.ok(message.length < 1500);
+    return true;
+  });
 });

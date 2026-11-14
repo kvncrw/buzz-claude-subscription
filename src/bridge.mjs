@@ -1,16 +1,19 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, chmod, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, normalize } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { credentialCommand, powershellArguments } from './credentials.mjs';
+import { BridgeError, windowsHelper } from './native-platform.mjs';
 
 export const LIMITS = Object.freeze({ request: 4 * 1024 * 1024, token: 8192, line: 4 * 1024 * 1024, output: 128 * 1024 * 1024, secretTimeout: 12000 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[a-zA-Z0-9.-]+)?$/;
+export const MIN_CLAUDE_VERSION = '2.1.267';
+// The host caps turns at 30 minutes. A day also covers termination/clock margins.
+export const STALE_RUN_AGE = 24 * 60 * 60 * 1000;
 
-export class BridgeError extends Error {}
 const fail = (message) => { throw new BridgeError(message); };
 export function publicError(error) {
   return error instanceof BridgeError ? error.message : 'The bridge operation failed. Check Claude Code and your operating system credential store availability.';
@@ -35,7 +38,7 @@ export function isolatedEnv(source = process.env, token) {
   const env = {};
   for (const [key, value] of Object.entries(source)) {
     if (/^(?:ANTHROPIC|CLAUDE|AWS|AMAZON|BEDROCK|GOOGLE|GCLOUD|GCP|VERTEX|AZURE|FOUNDRY|OPENAI|LITELLM|OTEL)(?:_|$)/i.test(key) || /^CLAUDECODE$/i.test(key)) continue;
-    if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_.*)$/i.test(key)) continue;
+    if (/^(?:HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_.*)$/i.test(key)) continue;
     if (value !== undefined) env[key] = value;
   }
   if (token !== undefined) env.CLAUDE_CODE_OAUTH_TOKEN = validateToken(token);
@@ -58,7 +61,7 @@ export function validateRequest(request) {
   if (!text(request.prompt, 2 * 1024 * 1024, true) || !text(request.systemPrompt, 1024 * 1024)) fail('Invalid or oversized prompt.');
   if (!UUID.test(request.sessionId ?? '') || typeof request.sessionId !== 'string' || typeof request.resume !== 'boolean') fail('A valid session UUID and explicit resume flag are required.');
   if (!['default', 'acceptEdits'].includes(request.permissionMode)) fail('Only default and acceptEdits permission modes are supported.');
-  if (request.model !== undefined && (typeof request.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(request.model))) fail('Invalid Claude model.');
+  if (request.model !== undefined && (typeof request.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}(?:\[1m\])?$/.test(request.model))) fail('Invalid Claude model.');
   expandPath(request.cwd);
   if (!object(request.mcp) || Object.keys(request.mcp).some((key) => !['url', 'headers'].includes(key))) fail('Invalid Buzz MCP configuration.');
   let url;
@@ -91,7 +94,7 @@ export async function readRequest(input, { signal, timeout = 15000 } = {}) {
     }
     let request;
     try { request = JSON.parse(Buffer.concat(chunks, size).toString('utf8')); } catch { fail('Bridge input must contain exactly one JSON request.'); }
-    return validateRequest(request);
+    return request;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
@@ -185,6 +188,16 @@ async function readSmallFile(path, limit) {
   } finally { await file.close(); }
 }
 
+export function supportedClaudeVersion(version) {
+  if (!VERSION.test(version)) return false;
+  const actual = version.split('-')[0].split('.').map(Number);
+  const minimum = MIN_CLAUDE_VERSION.split('.').map(Number);
+  for (let index = 0; index < minimum.length; index++) {
+    if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+  }
+  return !version.includes('-');
+}
+
 export async function resolveClaude(binary, { env = process.env, home = homedir(), signal } = {}) {
   const explicit = binary !== undefined && binary !== '' && binary !== 'claude';
   const candidates = [];
@@ -220,6 +233,7 @@ export async function resolveClaude(binary, { env = process.env, home = homedir(
       } catch { /* Managed Claude is optional when PATH provides it. */ }
     }
   }
+  let oldVersion;
   for (const candidate of new Set(candidates)) {
     if (signal?.aborted) fail('Bridge operation cancelled.');
     try {
@@ -228,26 +242,82 @@ export async function resolveClaude(binary, { env = process.env, home = homedir(
       const resolved = await realpath(candidate);
       const result = await capture(resolved, ['--version'], { env: isolatedEnv(env), signal, timeout: 8000, limit: 4096 });
       const match = result.output.trim().match(/^(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)(?:\s+\(Claude Code\))?$/);
-      if (result.code === 0 && match && VERSION.test(match[1])) return { binary: resolved, version: match[1] };
+      if (result.code === 0 && match && VERSION.test(match[1])) {
+        if (supportedClaudeVersion(match[1])) return { binary: resolved, version: match[1] };
+        oldVersion ??= match[1];
+      }
     } catch {
       if (signal?.aborted) fail('Bridge operation cancelled.');
     }
   }
+  if (oldVersion) fail(`${explicit ? 'The configured Claude executable reports' : 'Only outdated Claude Code executables were found; detected'} ${oldVersion}. Install Claude Code ${MIN_CLAUDE_VERSION} or newer for dynamic system-prompt support.`);
   if (explicit) fail('The configured Claude executable is unavailable or did not report a valid version.');
   return null;
+}
+
+export async function cleanupStaleRunFiles({ root = tmpdir(), now = Date.now(), signal } = {}) {
+  let entries;
+  try { entries = await readdir(root, { withFileTypes: true }); } catch { return; }
+  const cutoff = now - STALE_RUN_AGE;
+  const uid = process.getuid?.();
+  for (const entry of entries) {
+    if (signal?.aborted) return;
+    if (!/^buzz-claude-subscription-[A-Za-z0-9]{6}$/.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const directory = join(root, entry.name);
+    try {
+      const before = await lstat(directory);
+      if (!before.isDirectory() || before.isSymbolicLink() || before.mtimeMs >= cutoff || (uid !== undefined && before.uid !== uid)) continue;
+      const children = await readdir(directory);
+      if (children.some((name) => !['system.txt', 'mcp.json', 'run-owner.json'].includes(name))) continue;
+      let safe = true;
+      for (const name of children) {
+        const info = await lstat(join(directory, name));
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.mtimeMs >= cutoff || (uid !== undefined && info.uid !== uid)) { safe = false; break; }
+      }
+      if (!safe) continue;
+      if (children.includes('run-owner.json')) {
+        const owner = JSON.parse(await readSmallFile(join(directory, 'run-owner.json'), 256));
+        if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0) continue;
+        try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
+      }
+      if (process.platform === 'win32') {
+        // Node's Windows uid is not an ownership check. Compare the account SID
+        // for every candidate, and fail closed on ACL/reparse/access failures.
+        const ownership = await capture(windowsHelper('powershell'), powershellArguments(`
+$ErrorActionPreference = 'Stop'
+try {
+  $paths = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  foreach ($path in $paths) {
+    $item = Get-Item -LiteralPath $path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+    $owner = (Get-Acl -LiteralPath $path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -ne $sid) { exit 1 }
+  }
+  [Console]::Out.Write('owned')
+} catch { exit 1 }
+`), { input: JSON.stringify([directory, ...children.map((name) => join(directory, name))]), signal, limit: 256 });
+        if (ownership.code !== 0 || ownership.output !== 'owned') continue;
+      } else if (uid === undefined) continue;
+      const current = await lstat(directory);
+      if (current.dev !== before.dev || current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || current.isSymbolicLink()) continue;
+      await rm(directory, { recursive: true, force: true });
+    } catch { /* Residue is preferable to deleting anything uncertain or inaccessible. */ }
+  }
 }
 
 export async function createRunFiles(request, { root = tmpdir(), signal } = {}) {
   const directory = await mkdtemp(join(root, 'buzz-claude-subscription-'));
   try {
     if (process.platform === 'win32') {
-      const identity = await capture('powershell.exe', powershellArguments('[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)'), { limit: 4096, signal });
+      const identity = await capture(windowsHelper('powershell'), powershellArguments('[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)'), { limit: 4096, signal });
       const sid = identity.output.trim();
       if (identity.code !== 0 || !/^S-1-\d+(?:-\d+)+$/.test(sid)) fail('Cannot determine the Windows account for private temporary files.');
-      const acl = await capture('icacls.exe', [directory, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/q'], { limit: 4096, signal });
+      const acl = await capture(windowsHelper('icacls'), [directory, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/q'], { limit: 4096, signal });
       if (acl.code !== 0) fail('Cannot secure private temporary files with Windows ACLs.');
     } else await chmod(directory, 0o700);
     if (signal?.aborted) fail('Claude run cancelled.');
+    await writeFile(join(directory, 'run-owner.json'), JSON.stringify({ pid: process.pid }), { mode: 0o600, flag: 'wx' });
     const system = join(directory, 'system.txt');
     const mcp = join(directory, 'mcp.json');
     const headers = Object.fromEntries(request.mcp.headers.map(({ name, value }) => [name, value]));
@@ -261,7 +331,7 @@ export async function createRunFiles(request, { root = tmpdir(), signal } = {}) 
 }
 
 export function claudeArguments(request, files) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', files.mcp, '--append-system-prompt-file', files.system, '--permission-prompts', 'none', '--allowedTools', 'mcp__buzz__*'];
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--setting-sources', '', '--system-prompt-snapshot', 'off', '--strict-mcp-config', '--mcp-config', files.mcp, '--append-system-prompt-file', files.system, '--permission-prompts', 'none', '--allowedTools', 'mcp__buzz__*'];
   args.push('--permission-mode', request.permissionMode === 'acceptEdits' ? 'acceptEdits' : 'manual');
   if (request.model) args.push('--model', request.model);
   args.push(request.resume ? '--resume' : '--session-id', request.sessionId);
@@ -275,6 +345,7 @@ export async function runClaude(request, { binary, token, emit, signal, tempRoot
   try { if (!(await stat(cwd)).isDirectory()) fail('The requested working directory does not exist.'); }
   catch { fail('The requested working directory does not exist or is inaccessible.'); }
   if (signal?.aborted) fail('Claude run cancelled.');
+  await cleanupStaleRunFiles({ root: tempRoot, signal });
   const files = await createRunFiles(request, { root: tempRoot, signal });
   let tracked;
   try {
@@ -287,6 +358,12 @@ export async function runClaude(request, { binary, token, emit, signal, tempRoot
       if (stderrSize > 1024 * 1024) { stderrExceeded = true; tracked.stop(); }
     });
     child.stdin.on('error', () => {});
+    const spawned = await new Promise((resolve) => {
+      child.once('spawn', () => resolve(true));
+      child.once('error', () => resolve(false));
+    });
+    if (!spawned) fail('Unable to start the Claude executable.');
+    await emit({ type: 'bridge_started' });
     child.stdin.end(request.prompt);
     const decoder = new StringDecoder('utf8');
     let pending = '', bytes = 0, sawResult = false;
@@ -319,12 +396,33 @@ export async function runClaude(request, { binary, token, emit, signal, tempRoot
     if (signal?.aborted) fail('Claude run cancelled.');
     if (stderrExceeded) fail('Claude diagnostic output exceeded the size limit.');
     if (result.failed) fail('Unable to start the Claude executable.');
-    if (result.code !== 0) fail('Claude exited unsuccessfully. Check the result event, OAuth subscription, and CLI compatibility.');
-    if (!sawResult) fail('Claude exited without a final result event.');
+    if (!sawResult) fail(result.code === 0 ? 'Claude exited without a final result event.' : 'Claude exited unsuccessfully without a final result. Check your OAuth subscription and CLI compatibility.');
+    if (!Number.isInteger(result.code)) fail('Claude was terminated before it could exit normally.');
+    return result.code;
   } finally {
     if (tracked) { tracked.stop(); await tracked.closed; tracked.dispose(); }
     await files.cleanup();
   }
+}
+
+export async function connectionStatus(binary, { signal, tokenLookup = lookupToken, cliLookup = resolveClaude } = {}) {
+  const status = { tokenStored: false, binary: null, version: null };
+  await Promise.all([
+    (async () => {
+      try { status.tokenStored = await tokenLookup({ signal }) !== null; }
+      catch (error) { status.credentialError = publicError(error); }
+    })(),
+    (async () => {
+      try {
+        const cli = await cliLookup(binary, { signal });
+        status.binary = cli?.binary ?? null;
+        status.version = cli?.version ?? null;
+        if (!cli) status.cliError = 'Claude Code was not found. Install Claude Code or configure its absolute executable path.';
+      } catch (error) { status.cliError = publicError(error); }
+    })(),
+  ]);
+  if (signal?.aborted) fail('Bridge operation cancelled.');
+  return status;
 }
 
 export async function handleRequest(request, { emit, signal } = {}) {
@@ -336,14 +434,13 @@ export async function handleRequest(request, { emit, signal } = {}) {
     await removeToken({ signal });
     await emit({ type: 'bridge_saved', tokenStored: false });
   } else if (request.action === 'status') {
-    const token = await lookupToken({ signal });
-    const cli = await resolveClaude(request.binary, { signal });
-    await emit({ type: 'bridge_status', tokenStored: token !== null, binary: cli?.binary ?? null, version: cli?.version ?? null });
+    await emit({ type: 'bridge_status', ...await connectionStatus(request.binary, { signal }) });
   } else {
     const token = await lookupToken({ signal });
     if (!token) fail('No OAuth token is stored. Save a Claude subscription token in the harness settings first.');
     const cli = await resolveClaude(request.binary, { signal });
     if (!cli) fail('Claude Code was not found. Install Claude Code or configure its absolute executable path.');
-    await runClaude(request, { binary: cli.binary, token, emit, signal });
+    return await runClaude(request, { binary: cli.binary, token, emit, signal });
   }
+  return 0;
 }

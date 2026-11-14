@@ -29,7 +29,7 @@ function emit(event) {
 async function main() {
   try {
     const request = await readRequest(process.stdin, { signal: controller.signal });
-    await handleRequest(request, { emit, signal: controller.signal });
+    process.exitCode = await handleRequest(request, { emit, signal: controller.signal });
   } catch (error) {
     process.exitCode = signalExit ?? 1;
     if (!process.stdout.destroyed) {
