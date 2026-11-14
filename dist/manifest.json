@@ -7,7 +7,6 @@
     "category": "agents",
     "tags": ["Claude Code", "subscription", "Windows", "Linux", "macOS"]
   },
-  "updates": { "defaultEnabled": false },
   "host": {
     "files": true,
     "mcp": true,
