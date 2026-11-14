@@ -92,7 +92,12 @@ export function credentialCommand(platform, action, token, { service = SERVICE, 
     return { binary: 'powershell.exe', args: powershellArguments(WINDOWS_CREDENTIAL_SCRIPT), input: JSON.stringify({ action, service, account, ...(action === 'save' ? { token } : {}) }), missing: 44 };
   }
   if (platform === 'darwin') {
-    if (action === 'save') return { binary: '/usr/bin/security', args: ['-i'], input: `add-generic-password -U -a ${account} -s ${service} -l "Buzz Claude subscription OAuth token" -w ${token}\nquit\n`, missing: 44 };
+    if (action === 'save') {
+      const input = `add-generic-password -U -a ${account} -s ${service} -l "Buzz Claude subscription OAuth token" -w ${token}\n`;
+      // security -i exits on EOF, not "quit"; its input buffer is 4096 bytes.
+      if (Buffer.byteLength(input) >= 4096) throw new Error('Token exceeds the macOS Keychain helper input limit.');
+      return { binary: '/usr/bin/security', args: ['-i'], input, missing: 44 };
+    }
     return { binary: '/usr/bin/security', args: [action === 'lookup' ? 'find-generic-password' : 'delete-generic-password', '-a', account, '-s', service, ...(action === 'lookup' ? ['-w'] : [])], input: '', missing: 44 };
   }
   return {

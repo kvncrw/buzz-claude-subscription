@@ -26,6 +26,14 @@ test('Windows credentials reject oversized values before reaching the OS', () =>
   assert.throws(() => credentialCommand('win32', 'save', `sk-ant-oat01-${'a'.repeat(2560)}`), /size limit/);
 });
 
+test('macOS rejects an oversized interactive command before it can truncate a saved token', () => {
+  const prefix = 'sk-ant-oat01-';
+  const overhead = Buffer.byteLength(credentialCommand('darwin', 'save', TOKEN).input) - TOKEN.length;
+  const fits = prefix + 'a'.repeat(4095 - overhead - prefix.length);
+  assert.equal(Buffer.byteLength(credentialCommand('darwin', 'save', fits).input), 4095);
+  assert.throws(() => credentialCommand('darwin', 'save', fits + 'a'), /input limit/);
+});
+
 test('credential namespaces reject option, shell, and path injection', () => {
   for (const platform of ['linux', 'darwin', 'win32']) {
     for (const value of ['bad name', '-option', 'bad\ncommand', 'bad"quote', '../traversal']) {

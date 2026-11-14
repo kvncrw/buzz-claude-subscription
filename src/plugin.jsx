@@ -22,6 +22,22 @@ export function apply(ctx) {
   const defaults = () => ({ model: 'sonnet', cwd: '~/.buzz/claude-subscription-workspace', permissionMode: 'default', instructions: '', scope: 'thread', binary: '' });
   const configOf = config => ({ ...defaults(), ...config });
 
+  function Form({ children }) {
+    return <div className="kvncrw-claude" style={{ display: 'grid', gap: 16, minWidth: 0 }}>
+      <style>{`
+        .kvncrw-claude :is(input,textarea,select) { display:block; box-sizing:border-box; width:100%; min-width:0; margin-top:6px; padding:9px 11px; border:1px solid color-mix(in srgb,currentColor 25%,transparent); border-radius:9px; background:color-mix(in srgb,currentColor 5%,transparent); color:inherit; font:inherit; }
+        .kvncrw-claude button { padding:8px 12px; border:1px solid color-mix(in srgb,currentColor 25%,transparent); border-radius:9px; background:color-mix(in srgb,currentColor 8%,transparent); color:inherit; cursor:pointer; }
+        .kvncrw-claude :disabled { opacity:.5; cursor:not-allowed; }
+        .kvncrw-claude :is(input,textarea,select,button,summary):focus-visible { outline:2px solid currentColor; outline-offset:2px; }
+        .kvncrw-claude p { font-size:13px; line-height:1.5; }
+        .kvncrw-claude :is(dd,p) { overflow-wrap:anywhere; }
+        .kvncrw-claude dt { margin-top:8px; font-weight:600; }
+        .kvncrw-claude summary { cursor:pointer; padding:8px 0; font-weight:600; }
+      `}</style>
+      {children}
+    </div>;
+  }
+
   async function inspect(binary = '', signal) {
     let answer;
     const code = await bridgeRequest(ctx.host, bridgeSource, { action: 'status', ...(binary ? { binary } : {}) }, {
@@ -85,7 +101,7 @@ export function apply(ctx) {
         if (!disposed) notify();
       }
     }
-    return <section className="ui-card" style={{ padding: 20, display: 'grid', gap: 12 }}>
+    return <Form><section className="ui-card" style={{ padding: 16, display: 'grid', gap: 12 }}>
       <h2>Claude Code (subscription)</h2>
       <p>Uses your Claude subscription, not an Anthropic API key or Buzz's built-in Claude sign-in.</p>
       <dl><dt>Claude binary</dt><dd>{status?.binary || 'Not detected'}</dd><dt>Version</dt><dd>{status?.version || 'Not detected'}</dd><dt>Subscription token</dt><dd>{status ? (status.tokenStored ? 'Configured; validity checked when a turn runs' : 'Not configured') : 'Unknown'}</dd></dl>
@@ -97,13 +113,13 @@ export function apply(ctx) {
       {confirmRemove && <div role="alert"><p>Remove the saved subscription token from this device? Future turns will not run until you save another token.</p><button onClick={() => void change('remove')}>Confirm removal</button>{' '}<button onClick={() => setConfirmRemove(false)}>Keep token</button></div>}
       {message && <p role="status">{message}</p>}
       <p>Claude's standard tool permissions are not an OS sandbox. This trusted plugin, Claude and approved tools can access this account's files and network. No Buzz protection capability or permission bypass is enabled.</p>
-    </section>;
+    </section></Form>;
   }
 
   function Fields({ config, onChange, disabled }) {
     const value = configOf(config);
     const field = (name, next) => onChange({ ...value, [name]: next });
-    return <fieldset disabled={disabled} style={{ display: 'grid', gap: 12 }}>
+    return <Form><fieldset disabled={disabled} style={{ display: 'grid', gap: 16 }}>
       <label>Model alias or ID<input value={value.model} placeholder="sonnet, opus, haiku, or a full Claude model ID" onChange={event => field('model', event.target.value)} style={{ display: 'block', width: '100%' }} /></label>
       <label>Working folder<input value={value.cwd} onChange={event => field('cwd', event.target.value)} style={{ display: 'block', width: '100%' }} /></label>
       <p>Use an absolute path or ~/… on the system running Buzz. The default folder is created automatically; a custom folder must already exist. This is a working directory, not filesystem containment.</p>
@@ -112,7 +128,7 @@ export function apply(ctx) {
       <p>Buzz MCP tools are explicitly allowed. Other actions follow Claude's standard permissions. Requests needing interactive approval are denied, not silently approved. Accept edits authorizes file changes; it does not authorize every shell command. Neither mode provides an OS sandbox.</p>
       <label>Conversation sessions<select value={value.scope} onChange={event => field('scope', event.target.value)}><option value="thread">One per thread (DMs and Solo chats stay whole)</option><option value="channel">One per channel</option></select></label>
       <label>Agent instructions<textarea value={value.instructions} onChange={event => field('instructions', event.target.value)} rows={6} style={{ display: 'block', width: '100%' }} /></label>
-    </fieldset>;
+    </fieldset></Form>;
   }
 
   function Create(props) {
@@ -127,7 +143,7 @@ export function apply(ctx) {
       return () => cancel.abort();
     }, [props.config.binary, connection]);
     React.useEffect(() => { props.onReadyChange?.(ready); }, [ready, props.onReadyChange]);
-    return <div>{props.harnessControl}<Fields {...props} /><p role={problem ? 'alert' : 'status'}>{problem || (ready ? 'Subscription setup is ready.' : 'Configure the subscription token in Settings → Claude Code (subscription), and check the executable.')}</p></div>;
+    return <Form>{props.harnessControl}<details><summary>Subscription token setup</summary><Connection /></details><Fields {...props} /><p role={problem ? 'alert' : 'status'}>{problem || (ready ? 'Subscription setup is ready.' : 'Open Subscription token setup above to save your token and check the executable.')}</p></Form>;
   }
 
   async function retire(key) {

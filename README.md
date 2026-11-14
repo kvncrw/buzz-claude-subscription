@@ -27,8 +27,8 @@ On Debian/Ubuntu, `sudo apt install libsecret-tools gnome-keyring` supplies the 
 1. Open **Settings → Plugins → Manage plugins → Add** in Buzz.
 2. Choose Git/GitHub import and enter `https://github.com/kvncrw/buzz-claude-subscription`, reference `main`.
 3. Select the **dist** folder, review the declared computer access, and install/enable the plugin. Built artifacts are committed; Buzz does not run an npm install or build.
-4. Open the plugin's settings. Paste the output from `claude setup-token` into the masked subscription-token field and save it. Do not put it in Buzz's built-in Anthropic API-key field.
-5. Create an agent and choose **Claude Code (subscription)**. Select its workspace, model, and permissions. Mention it in a Buzz conversation.
+4. Create an agent and choose **Claude Code (subscription)**. Expand **Subscription token setup**, paste the output from `claude setup-token` into the masked field, and save it. The same controls are available in Settings → Claude Code (subscription). Do not use Buzz's built-in Anthropic API-key field.
+5. Select the agent's workspace, model, and permissions, then create it and mention it in a Buzz conversation.
 
 Alternatively, download the repository and import its `dist` directory as a local folder. Updates are explicit: review the source/release before updating the installed plugin. Automatic update checks are disabled by default.
 
@@ -49,7 +49,7 @@ Subscription tokens do not enable Claude Remote Control or claude.ai connectors.
 - The token is entered in a masked field and sent to the local helper through stdin, never command-line arguments.
 - It is stored only in the operating system's credential store, not in Buzz agent records, plugin storage, source code, or Git.
 - The helper loads it privately and supplies `CLAUDE_CODE_OAUTH_TOKEN` to the Claude child process. The UI receives status, not the saved token.
-- Temporary MCP configuration is private to your user and removed after each turn.
+- Temporary MCP configuration is private to your user and removed after normal completion or graceful cancellation. A forced process/OS termination can leave owner-restricted temporary files behind.
 - Replacement/removal applies to new runs. An already-running Claude process may retain the token it started with; stop that run to retire it immediately. Removing the local token does not revoke it at Anthropic.
 - Plugins and commands run as your user. Another process with equivalent access, an administrator, or code executed by Claude may access credentials available to that account. OS storage is protection at rest, not isolation from the agent's tools.
 
@@ -66,6 +66,8 @@ npm run build
 `src/plugin.jsx` is the external Buzz module, using the host's React instance. `src/session.mjs` owns turn/session protocol handling. The bridge is bundled into the same module as source and launched with native Node; no downloaded helper executable or native npm dependency is needed at runtime. `dist/plugin.js` contains no runtime imports or separate assets.
 
 The reference contract is [Buzz v1.0.2](https://github.com/block/buzz-app/tree/v1.0.2). This repository contains original implementation code under MIT; Buzz and Claude Code retain their own licenses and are not redistributed here.
+
+CI exercises the native credential store on Windows, Linux, and macOS using synthetic values in a unique namespace, including replacement and removal. It also checks session/stream behavior and reproducible artifacts. Run `node scripts/native-smoke.mjs` locally only with an available, unlocked OS credential store; it does not access the production token.
 
 ## License
 
