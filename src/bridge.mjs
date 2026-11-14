@@ -285,6 +285,8 @@ export async function cleanupStaleRunFiles({ root = tmpdir(), now = Date.now(), 
         // for every candidate, and fail closed on ACL/reparse/access failures.
         const ownership = await capture(windowsHelper('powershell'), powershellArguments(`
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 try {
   $paths = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -308,10 +310,11 @@ try {
 
 export async function createRunFiles(request, { root = tmpdir(), signal } = {}) {
   const directory = await mkdtemp(join(root, 'buzz-claude-subscription-'));
+  let sid;
   try {
     if (process.platform === 'win32') {
       const identity = await capture(windowsHelper('powershell'), powershellArguments('[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)'), { limit: 4096, signal });
-      const sid = identity.output.trim();
+      sid = identity.output.trim();
       if (identity.code !== 0 || !/^S-1-\d+(?:-\d+)+$/.test(sid)) fail('Cannot determine the Windows account for private temporary files.');
       const acl = await capture(windowsHelper('icacls'), [directory, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/q'], { limit: 4096, signal });
       if (acl.code !== 0) fail('Cannot secure private temporary files with Windows ACLs.');
@@ -323,6 +326,12 @@ export async function createRunFiles(request, { root = tmpdir(), signal } = {}) 
     const headers = Object.fromEntries(request.mcp.headers.map(({ name, value }) => [name, value]));
     await writeFile(system, request.systemPrompt, { mode: 0o600, flag: 'wx' });
     await writeFile(mcp, JSON.stringify({ mcpServers: { buzz: { type: 'http', url: request.mcp.url, headers } } }), { mode: 0o600, flag: 'wx' });
+    if (sid) {
+      // Elevated processes otherwise assign Administrators ownership, preventing
+      // later account-specific cleanup even though the private DACL is correct.
+      const owner = await capture(windowsHelper('icacls'), [directory, '/setowner', `*${sid}`, '/T', '/q'], { limit: 4096, signal });
+      if (owner.code !== 0) fail('Cannot set private temporary-file ownership.');
+    }
     return { directory, system, mcp, cleanup: () => rm(directory, { recursive: true, force: true }) };
   } catch (error) {
     await rm(directory, { recursive: true, force: true });

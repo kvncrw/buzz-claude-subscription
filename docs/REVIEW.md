@@ -12,7 +12,7 @@ The user-requested full code and adversarial review was performed with **Claude 
 | 4. Deadlines reported as Stop | Deadline, owner Stop, lifetime cancellation, and Reset have distinct outcomes. Queued cancellations settle promptly. |
 | 5. Save aborts active work | Saving only affects subsequent turns; explicit Reset retains confirmation and closes admission before retiring work. |
 | 6. Stale/excessive setup probes | Passive probes are deduplicated, explicit checks invalidate caches, credential changes obtain fresh status, and custom executable probing happens on blur rather than every keystroke. |
-| 7. Forced-stop temporary residue | Subsequent runs conservatively remove day-old owned, inactive temporary directories. Fresh/live, linked, foreign-owned, or uncertain entries are retained. Windows/app-exit limitations are documented. |
+| 7. Forced-stop temporary residue | Subsequent runs conservatively remove day-old owned, inactive temporary directories. Windows files are assigned to the actual account even in elevated processes; ownership probes handle UTF-8 paths without progress-stream interference. Fresh/live, linked, foreign-owned, or uncertain entries are retained. Windows/app-exit limitations are documented. |
 | 8. Notes lost before Claude starts | The native bridge emits a spawn marker; consumed notes are restored when that marker never arrived. |
 | 9. Unbounded session retention | Associations are capped at 200 per agent, and explicit deletion/retirement evidence clears them. Disconnected memberships are not mistaken for deleted ones. |
 | 10. Unsupported CLI reports ready | Automatic discovery skips older candidates; an explicitly selected old executable reports the required version. |
@@ -23,6 +23,7 @@ Additional corrections cover early malformed output, consumer exception attribut
 
 - Integrated Linux regression run: **65 passed, 1 skipped, 0 failed**. The skipped ownership test requires a POSIX root runner; no foreign-ownership execution is claimed.
 - Linux and native Windows ARM64: compiled helper launched through the real node -e command-line/stdio boundary; valid status and malformed credential rejection passed. Windows Credential Manager save/read/replace/remove also passed after the helper-path changes.
+- Native Windows ARM64 additionally passed private-file creation and stale cleanup with elevated-process ownership and a non-ASCII temporary path. macOS fixtures resolve their real temporary paths rather than assuming `/var` is not a symlink.
 - CI includes Linux Node 20/22 and Windows/macOS Node 22, native credential smoke checks, compiled-helper launch, and reproducible artifacts. See the repository's Actions results for the corresponding commit.
 - The README distinguishes actual Linux Buzz UI/model verification from native adapter CI. Full Windows/macOS Buzz UI/model runs and WSL deployment are not claimed.
 - Blind snapshot absence-pruning was rejected: Buzz excludes disconnected communities and other viewers from otherwise-ready snapshots (host service lines 1274–1283 and 7216–7219). Absence is not deletion evidence.

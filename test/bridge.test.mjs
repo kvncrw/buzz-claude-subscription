@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, chown, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ const TOKEN = 'sk-ant-oat01-synthetic_non_authentication_token_123456789';
 const request = (changes = {}) => ({ action: 'run', prompt: 'Test prompt', systemPrompt: 'Test instructions', sessionId: randomUUID(), resume: false, mcp: { url: 'http://127.0.0.1:1234/mcp', headers: [{ name: 'Authorization', value: 'Bearer synthetic_buzz_header' }] }, permissionMode: 'default', cwd: tmpdir(), ...changes });
 
 async function workspace(t) {
-  const root = await mkdtemp(join(tmpdir(), 'buzz-bridge-test-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'buzz-bridge-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -223,7 +223,11 @@ test('status discovers credentials and CLI independently, preserving safe action
 
 async function staleDirectory(root, name, contents = { 'system.txt': 'private prompt', 'mcp.json': '{}' }) {
   const directory = join(root, name);
-  await mkdir(directory, { mode: 0o700 });
+  const files = await createRunFiles(request(), { root });
+  await rename(files.directory, directory);
+  for (const file of ['system.txt', 'mcp.json', 'run-owner.json']) {
+    if (!Object.hasOwn(contents, file)) await rm(join(directory, file));
+  }
   const old = new Date(Date.now() - STALE_RUN_AGE - 60000);
   for (const [file, value] of Object.entries(contents)) {
     await writeFile(join(directory, file), value, { mode: 0o600 });
@@ -234,7 +238,8 @@ async function staleDirectory(root, name, contents = { 'system.txt': 'private pr
 }
 
 test('startup removes stale residue but preserves fresh, live, unrelated and uncertain directories', async (t) => {
-  const root = await workspace(t);
+  const root = join(await workspace(t), 'residue-λ');
+  await mkdir(root);
   const stale = await staleDirectory(root, 'buzz-claude-subscription-stale1');
   const fresh = await createRunFiles(request(), { root });
   const live = await staleDirectory(root, 'buzz-claude-subscription-live01', { 'run-owner.json': JSON.stringify({ pid: process.pid }) });

@@ -215,7 +215,7 @@ The reference contract is [Buzz v1.0.2](https://github.com/block/buzz-app/tree/v
 
 CI exercises real native credential save/read/replace/remove on Windows, Linux, and macOS using synthetic values in a unique namespace. It also checks session/stream regressions, reproducible artifacts, and the actual bundled `node -e` process boundary. Linux includes the minimum supported Node 20 version. Run `node scripts/native-smoke.mjs` locally only with an available, unlocked credential store; it does not access the production credential. After building, `node scripts/bundle-smoke.mjs` checks the compiled helper's status protocol and invalid-input rejection without making a model request; `.build/bridge.cjs` is an ignored build intermediate, not a runtime dependency.
 
-- **Windows ARM64:** native Credential Manager round-trip and Claude executable discovery verified locally.
+- **Windows ARM64:** native Credential Manager round-trip, Claude executable discovery, and elevated-process temporary-file ownership/cleanup with non-ASCII paths verified locally.
 - **Linux desktop:** installed into unmodified Buzz 1.0.2; a real subscription-authenticated reply and a follow-up retaining context verified with Claude Code 2.1.300.
 - **Not exercised end-to-end:** Buzz UI/model turns on Windows and macOS, and WSL deployment. Native adapter CI does not replace those desktop checks.
 
