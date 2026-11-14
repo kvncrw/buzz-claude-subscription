@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -48,7 +48,8 @@ for (const output of Object.values(plugin.metafile.outputs)) {
 await mkdir(dist, { recursive: true });
 await writeFile(path.join(dist, 'plugin.js'), plugin.outputFiles[0].text);
 for (const filename of ['manifest.json', 'README.md', 'LICENSE']) {
-  await copyFile(path.join(root, filename), path.join(dist, filename));
+  const contents = (await readFile(path.join(root, filename), 'utf8')).replace(/\r\n/g, '\n');
+  await writeFile(path.join(dist, filename), contents);
 }
 const sums = [];
 for (const filename of ['manifest.json', 'plugin.js', 'README.md', 'LICENSE']) {
