@@ -1,0 +1,23 @@
+{
+  "name": "buzz-claude-subscription",
+  "version": "1.0.0",
+  "description": "A cross-platform Buzz harness for Claude Code with a personal subscription token",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Kevin Crawley (kvncrw)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kvncrw/buzz-claude-subscription.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

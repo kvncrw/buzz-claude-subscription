@@ -1,0 +1,16 @@
+{
+  "id": "kvncrw.claude-subscription",
+  "name": "Claude Code (subscription)",
+  "apiVersion": 1,
+  "description": "Run Claude Code in Buzz using your personal subscription token, stored in your operating system's credential store.",
+  "discovery": {
+    "category": "agents",
+    "tags": ["Claude Code", "subscription", "Windows", "Linux", "macOS"]
+  },
+  "updates": { "defaultEnabled": false },
+  "host": {
+    "files": true,
+    "mcp": true,
+    "processes": [{ "id": "bridge", "program": "node" }]
+  }
+}
