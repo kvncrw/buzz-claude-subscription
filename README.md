@@ -49,14 +49,14 @@ In Buzz, open **Settings → Plugins → Manage plugins → Add**. In the Git im
 | Field | Value |
 | --- | --- |
 | Git or GitHub repository | `https://github.com/kvncrw/buzz-claude-subscription` |
-| Ref | `main` (includes the manifest compatibility fix; `v1.0.0` does not) |
+| Ref | `v1.0.1` |
 | Folder | `dist` |
 
 Choose **Find**, review the plugin and its declared computer access, then **Install plugin** with **Enable plugin** selected.
 
 Built artifacts are committed. Buzz does not run npm or compile the source. Alternatively, download the repository, extract it, and use **Add from folder → Browse** to select its `dist` directory—not the repository root or `src`.
 
-For a reproducible installation, pin a reviewed commit containing the manifest compatibility fix instead of `main`. The `v1.0.0` manifest includes an optional `updates` field that older Buzz desktop builds reject; on those builds it can prevent the whole plugin registry from loading. Removing that field does not change the Buzz 1.0.2 harness requirement.
+Use `v1.0.1` or a reviewed commit containing its manifest compatibility fix for reproducible installation. The `v1.0.0` manifest includes an optional `updates` field that older Buzz desktop builds reject; on those builds it can prevent the whole plugin registry from loading. Removing that field does not change the Buzz 1.0.2 harness requirement.
 
 ### 2. Generate your one-year token
 
