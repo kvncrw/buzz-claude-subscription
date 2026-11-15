@@ -49,12 +49,14 @@ In Buzz, open **Settings → Plugins → Manage plugins → Add**. In the Git im
 | Field | Value |
 | --- | --- |
 | Git or GitHub repository | `https://github.com/kvncrw/buzz-claude-subscription` |
-| Ref | `v1.0.0` |
+| Ref | `v1.0.1` |
 | Folder | `dist` |
 
 Choose **Find**, review the plugin and its declared computer access, then **Install plugin** with **Enable plugin** selected.
 
 Built artifacts are committed. Buzz does not run npm or compile the source. Alternatively, download the repository, extract it, and use **Add from folder → Browse** to select its `dist` directory—not the repository root or `src`.
+
+Use `v1.0.1` or a reviewed commit containing its manifest compatibility fix for reproducible installation. The `v1.0.0` manifest includes an optional `updates` field that older Buzz desktop builds reject; on those builds it can prevent the whole plugin registry from loading. Removing that field does not change the Buzz 1.0.2 harness requirement.
 
 ### 2. Generate your one-year token
 
@@ -155,6 +157,7 @@ When a new Claude session is required, Buzz supplies a bounded recent history, n
 
 | Symptom | Check or fix |
 | --- | --- |
+| “Couldn't open Buzz” / “unknown field `updates`” | Follow [Recover an unreadable plugin registry](#recover-an-unreadable-plugin-registry), then reinstall the corrected `dist` build. Disabling the plugin alone cannot fix registry deserialization. |
 | Buzz asks for an Anthropic API key | You selected the built-in **Claude** harness. Select **Claude Code (subscription)** instead. |
 | Subscription harness is missing | Enable the plugin in Manage plugins. Import the built `dist` folder and use Buzz 1.0.2. |
 | Node/helper cannot launch | Install native Node 20+, ensure the desktop application can find `node`, and restart Buzz after PATH changes. |
@@ -166,6 +169,19 @@ When a new Claude session is required, Buzz supplies a bounded recent history, n
 | A model is unavailable | Check your plan and update Claude. Enter a supported alias/full model ID; Fable 5.2 requires CLI 2.1.321+. |
 | “Ready” but no answer is visible | Open the message's reply thread. Confirm the host is online and the message mentions an agent authorized for that conversation. |
 | Changed workspace or inconsistent context | Stop active work, save the correct host-side workspace, then use **Reset saved conversations…** if needed. Previous file changes are not rolled back. |
+
+### Recover an unreadable plugin registry
+
+If Buzz reports ``unknown field `updates` `` while reading its plugin configuration:
+
+1. Quit Buzz and back up the active profile's `registry.json`.
+2. In `installed["kvncrw.claude-subscription"].manifest`, remove only the `"updates": { "defaultEnabled": false }` property. Keep the rest of the registry, including other plugins and their settings.
+3. Reopen Buzz. The application can now load, but the installed plugin artifact still contains the incompatible manifest.
+4. Replace the installed plugin with the corrected `dist` build in **Manage plugins**. If **Add** reports **Already installed**, use the plugin's update action; if that build cannot change sources, remove only this plugin and then add the corrected build. Do not hand-edit the cached artifact: its filename is a content hash and Buzz verifies its integrity.
+
+Avoid **Back up & reset settings** for this error unless you intentionally want to reset all plugin settings. Registry recovery does not change saved tokens or agent configuration. A desktop older than Buzz 1.0.2 still needs an upgrade for the supported harness APIs.
+
+If the plugin then reports that the external harness kit or agent storage is missing, check the version of the **running executable** and the target of your desktop/Start-menu shortcut. Installing a newer Buzz does not fix a shortcut or launch script that still points at an older executable.
 
 ## Security and permissions
 
@@ -181,7 +197,7 @@ This is a **trusted local plugin, not an OS sandbox**. Claude and its approved t
 - Mandatory proxy/custom-CA setups and gateway-managed Claude sessions are unsupported. The helper removes inherited proxy/CA overrides and cloud-provider variables; Claude's managed policies still apply.
 - Long-lived setup tokens cannot establish Claude Remote Control sessions or fetch claude.ai connectors. The local Buzz MCP integration provides this plugin's Buzz tools.
 
-Updates are explicit, and automatic update checks are disabled by default. Review source changes and computer-access grants before updating. Report security concerns without credentials or private machine details.
+Updates are explicit. The manifest omits the optional update policy for compatibility with desktop builds that reject it; Buzz 1.0.2 excludes plugins without that policy from automatic update checks. Reimport a reviewed release to update. Review source changes and computer-access grants before updating. Report security concerns without credentials or private machine details.
 
 Use an immutable release tag or commit when reproducibility matters. `main` changes over time. `SHA256SUMS` detects changed bytes but is not a publisher signature.
 
@@ -216,8 +232,9 @@ The reference contract is [Buzz v1.0.2](https://github.com/block/buzz-app/tree/v
 CI exercises real native credential save/read/replace/remove on Windows, Linux, and macOS using synthetic values in a unique namespace. It also checks session/stream regressions, reproducible artifacts, and the actual bundled `node -e` process boundary. Linux includes the minimum supported Node 20 version. Run `node scripts/native-smoke.mjs` locally only with an available, unlocked credential store; it does not access the production credential. After building, `node scripts/bundle-smoke.mjs` checks the compiled helper's status protocol and invalid-input rejection without making a model request; `.build/bridge.cjs` is an ignored build intermediate, not a runtime dependency.
 
 - **Windows ARM64:** native Credential Manager round-trip, Claude executable discovery, and elevated-process temporary-file ownership/cleanup with non-ASCII paths verified locally.
+- **Windows desktop:** recovered the unreadable registry on preview 219, then loaded the corrected plugin in the official x64 Buzz 1.0.2 build on Windows ARM64. The subscription setup UI detected Claude 2.1.317 and reported the existing token configured. This checks local readiness, not remote token validity.
 - **Linux desktop:** installed into unmodified Buzz 1.0.2; a real subscription-authenticated reply and a follow-up retaining context verified with Claude Code 2.1.300.
-- **Not exercised end-to-end:** Buzz UI/model turns on Windows and macOS, and WSL deployment. Native adapter CI does not replace those desktop checks.
+- **Not exercised end-to-end:** model turns on Windows, Buzz UI/model turns on macOS, and WSL deployment. Native adapter CI and local setup status do not replace those model-turn checks.
 
 Read the [full Claude Code Fable review and fix disposition](https://github.com/kvncrw/buzz-claude-subscription/blob/v1.0.0/docs/REVIEW.md). This is a static review, not a security certification.
 
