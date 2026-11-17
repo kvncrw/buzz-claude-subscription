@@ -145,6 +145,15 @@ export function createUI(React, setup, runtime) {
           follow Claude's standard permissions. Requests needing interactive approval are denied, not silently
           approved. Accept edits authorizes file changes, not every shell command. Neither mode is an OS sandbox.
         </Copy>
+        <label>Allowed tools (optional)
+          <input className="kvncrw-claude-control" value={value.allowedTools}
+            placeholder="Bash, Read, Edit, Write, Glob, Grep, WebFetch"
+            onChange={event => field('allowedTools', event.target.value)} />
+        </label>
+        <Copy>
+          Comma-separated Claude tool names this agent may use without approval, on top of the Buzz MCP tools.
+          A specifier narrows one: Bash(git:*). Leave empty to deny everything that needs approval.
+        </Copy>
         <label>Conversation sessions
           <select className="kvncrw-claude-control" value={value.scope} onChange={event => field('scope', event.target.value)}>
             <option value="thread">One per thread (DMs and Solo chats stay whole)</option>

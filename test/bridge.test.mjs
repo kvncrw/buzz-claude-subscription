@@ -77,6 +77,10 @@ test('CLI args fix permission/settings isolation and never carry prompts or cred
   assert.ok(!args.includes(input.prompt) && !args.includes(input.systemPrompt) && !args.includes(TOKEN));
   const edits = claudeArguments(request({ permissionMode: 'acceptEdits' }), { mcp: 'mcp', system: 'system' });
   assert.equal(edits[edits.indexOf('--permission-mode') + 1], 'acceptEdits');
+  const listed = claudeArguments(request({ allowedTools: ['Bash', 'Read', 'Bash(git:*)'] }), { mcp: 'mcp', system: 'system' });
+  assert.equal(listed[listed.indexOf('--allowedTools') + 1], 'mcp__buzz__*,Bash,Read,Bash(git:*)');
+  assert.equal(validateRequest(request({ allowedTools: ['Bash', 'Edit'] })).allowedTools.length, 2);
+  for (const allowedTools of ['Bash', [''], ['--dangerously-skip-permissions'], ['Bash(a\nb)'], [{}]]) assert.throws(() => validateRequest(request({ allowedTools })), BridgeError);
 });
 
 test('private prompt/MCP files contain only needed data and cleanup is idempotent', async (t) => {

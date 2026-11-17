@@ -2,14 +2,17 @@ import { bridgeRequest, SessionLanes, SessionStore, sessionKey, TurnOutput, safe
 
 export const defaults = () => ({
   model: 'sonnet', cwd: '~/.buzz/claude-subscription-workspace',
-  permissionMode: 'default', instructions: '', scope: 'thread', binary: '',
+  permissionMode: 'default', instructions: '', scope: 'thread', binary: '', allowedTools: '',
 });
 
 export function configOf(config) {
   const value = { ...defaults(), ...config };
-  for (const name of ['model', 'cwd', 'binary', 'instructions']) value[name] = String(value[name] ?? '').trim();
+  for (const name of ['model', 'cwd', 'binary', 'instructions', 'allowedTools']) value[name] = String(value[name] ?? '').trim();
   return value;
 }
+
+/** The owner's comma- or whitespace-separated allowlist, as --allowedTools entries. */
+export const allowedToolsOf = config => String(configOf(config).allowedTools).split(/[,\s]+/).map(tool => tool.trim()).filter(Boolean);
 
 export const configReady = config => Boolean(configOf(config).cwd && configOf(config).model);
 
@@ -90,6 +93,7 @@ export function createRuntime(ctx, source) {
         model: (delivery.model?.trim() || config.model) || undefined,
         prompt: prompt.text, systemPrompt, sessionId: id, resume: Boolean(previous),
         mcp: { url: server.url, headers: server.headers }, permissionMode: config.permissionMode, cwd,
+        ...(allowedToolsOf(config).length ? { allowedTools: allowedToolsOf(config) } : {}),
       }, { signal, onEvent: event => {
         if (event.type === 'bridge_started') started = true;
         output.accept(event);

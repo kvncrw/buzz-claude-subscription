@@ -52,7 +52,7 @@ function text(value, max, nonempty = false) { return typeof value === 'string' &
 export function validateRequest(request) {
   if (!object(request) || !['status', 'save', 'remove', 'run'].includes(request.action)) fail('Invalid bridge request.');
   const fields = request.action === 'run'
-    ? ['action', 'binary', 'model', 'prompt', 'systemPrompt', 'sessionId', 'resume', 'mcp', 'permissionMode', 'cwd']
+    ? ['action', 'binary', 'model', 'prompt', 'systemPrompt', 'sessionId', 'resume', 'mcp', 'permissionMode', 'cwd', 'allowedTools']
     : request.action === 'save' ? ['action', 'token', 'binary'] : ['action', 'binary'];
   if (Object.keys(request).some((key) => !fields.includes(key))) fail('Unexpected bridge request field.');
   if (request.binary !== undefined && request.binary !== '' && request.binary !== 'claude') expandPath(request.binary);
@@ -62,6 +62,7 @@ export function validateRequest(request) {
   if (!text(request.prompt, 2 * 1024 * 1024, true) || !text(request.systemPrompt, 1024 * 1024)) fail('Invalid or oversized prompt.');
   if (!UUID.test(request.sessionId ?? '') || typeof request.sessionId !== 'string' || typeof request.resume !== 'boolean') fail('A valid session UUID and explicit resume flag are required.');
   if (!['default', 'acceptEdits'].includes(request.permissionMode)) fail('Only default and acceptEdits permission modes are supported.');
+  if (request.allowedTools !== undefined) validateAllowedTools(request.allowedTools);
   if (request.model !== undefined && (typeof request.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}(?:\[1m\])?$/.test(request.model))) fail('Invalid Claude model.');
   expandPath(request.cwd);
   if (!object(request.mcp) || Object.keys(request.mcp).some((key) => !['url', 'headers'].includes(key))) fail('Invalid Buzz MCP configuration.');
@@ -340,8 +341,17 @@ export async function createRunFiles(request, { root = tmpdir(), signal } = {}) 
   }
 }
 
+// Tool names Claude accepts in --allowedTools: a tool, optionally with a
+// specifier such as Bash(git:*). The owner lists them per agent; nothing here
+// bypasses permissions, unlisted tools still deny with prompts off.
+const ALLOWED_TOOL = /^[A-Za-z0-9][A-Za-z0-9_*:.\-]{0,63}(?:\([^\n\0(),]{0,200}\))?$/;
+export function validateAllowedTools(value) {
+  if (!Array.isArray(value) || value.length > 64 || value.some((tool) => typeof tool !== 'string' || !ALLOWED_TOOL.test(tool))) fail('Invalid allowed tools list.');
+  return value;
+}
+
 export function claudeArguments(request, files) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--setting-sources', '', '--system-prompt-snapshot', 'off', '--strict-mcp-config', '--mcp-config', files.mcp, '--append-system-prompt-file', files.system, '--permission-prompts', 'none', '--allowedTools', 'mcp__buzz__*'];
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--setting-sources', '', '--system-prompt-snapshot', 'off', '--strict-mcp-config', '--mcp-config', files.mcp, '--append-system-prompt-file', files.system, '--permission-prompts', 'none', '--allowedTools', ['mcp__buzz__*', ...(request.allowedTools ?? [])].join(',')];
   args.push('--permission-mode', request.permissionMode === 'acceptEdits' ? 'acceptEdits' : 'manual');
   if (request.model) args.push('--model', request.model);
   args.push(request.resume ? '--resume' : '--session-id', request.sessionId);
